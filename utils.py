@@ -122,6 +122,44 @@ def get_projects_url(path):
     return url
 
 
+def _project_event_call(path, project_id, event_id, what):
+    """Post one booking/project association change. Never raises.
+
+    Both directions of this link are best-effort on purpose. The booking is
+    the thing that matters; the association is bookkeeping that lets a project
+    deletion clean up after itself. Refusing to make or delete a booking
+    because the projects backend is briefly unwell would be a worse failure
+    than a list that is momentarily wrong, and both endpoints are idempotent
+    so a later repeat costs nothing.
+    """
+    if not project_id or '#' not in str(project_id):
+        return
+    project_name, created_at = str(project_id).split('#', 1)
+    try:
+        requests.post(
+            get_projects_url(path),
+            json.dumps({
+                "project_name": project_name,
+                "created_at": created_at,
+                "event_id": event_id,
+            }),
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"could not {what} event {event_id} / project {project_id}: {e}")
+
+
+def dissociate_event_from_project(project_id, event_id):
+    """Forget a booking on the project it was going to run.
+
+    The mirror of associate_event_with_project. Without it the project's list
+    only ever grew: a deleted booking stayed listed forever, so
+    scheduled_with_events could not be read as the bookings that will run this
+    project, only as bookings that once existed.
+    """
+    _project_event_call('remove-project-event', project_id, event_id, 'dissociate')
+
+
 def associate_event_with_project(project_id, event_id):
     """Record a booking on the project it will run, at booking time.
 
@@ -141,21 +179,7 @@ def associate_event_with_project(project_id, event_id):
     refusing the booking because the projects backend is briefly unwell. The
     add-project-event endpoint is idempotent, so a retry is harmless.
     """
-    if not project_id or '#' not in str(project_id):
-        return
-    project_name, created_at = str(project_id).split('#', 1)
-    try:
-        requests.post(
-            get_projects_url('add-project-event'),
-            json.dumps({
-                "project_name": project_name,
-                "created_at": created_at,
-                "event_id": event_id,
-            }),
-            timeout=10,
-        )
-    except Exception as e:
-        print(f"could not associate event {event_id} with project {project_id}: {e}")
+    _project_event_call('add-project-event', project_id, event_id, 'associate')
 
 
 def get_project(project_name, created_at):

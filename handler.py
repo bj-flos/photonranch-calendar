@@ -7,6 +7,7 @@ from utils import create_response
 from utils import get_utc_iso_time
 from utils import create_calendar_event
 from utils import associate_event_with_project
+from utils import dissociate_event_from_project
 from utils import get_event_by_id
 from utils import get_events_during_time
 from utils import get_project
@@ -246,9 +247,16 @@ def deleteEventById(event, context):
     eventId = event_body['event_id']
     startTime = event_body['start']
 
+    # Read the project off the booking before it is gone, so the project can be
+    # told the booking no longer exists. Deliberately before the delete and
+    # used after it: the row is the only place that link is recorded.
+    doomed = get_event_by_id(eventId, startTime) or {}
+
     result = delete_calendar_event(eventId, startTime, userMakingThisRequest, requesterIsAdmin)
     if result is None:
         return create_response(403, "You may only modify your own events.")
+
+    dissociate_event_from_project(doomed.get('project_id'), eventId)
 
     message = json.dumps(result, indent=4, cls=DecimalEncoder)
     return create_response(200, message)
