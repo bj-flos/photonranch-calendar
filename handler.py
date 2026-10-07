@@ -6,6 +6,7 @@ from utils import calendar_table
 from utils import create_response
 from utils import get_utc_iso_time
 from utils import create_calendar_event
+from utils import associate_event_with_project
 from utils import get_event_by_id
 from utils import get_events_during_time
 from utils import get_project
@@ -52,6 +53,12 @@ def addNewEvent(event, context):
         event_body["last_modified"] = get_utc_iso_time()
 
         result = create_calendar_event(event_body)
+
+        # Tell the project it is booked, so deleting the project can also clear
+        # this booking. Done after the event exists, so a booking is never lost
+        # to a projects backend that is briefly unreachable.
+        associate_event_with_project(event_body.get('project_id'),
+                                     event_body['event_id'])
 
         message = json.dumps({
             'table_response': result,

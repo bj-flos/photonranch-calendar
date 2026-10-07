@@ -99,8 +99,20 @@ def get_events_during_time(time, site):
 
 
 def get_projects_url(path):
-    # Use the same projects deployment as the one running the calendar.
-    # E.g. The dev calendar backend will call the dev projects backend
+    # PTR_PROJECTS_ROOT first, which is how every other component in this stack
+    # is told where the services are. Without it this function could only ever
+    # name projects.photonranch.org, so a deployment with its own projects
+    # backend -- the Proxmox lab, or anything run offline -- would reach across
+    # to LCO production instead of to itself. Reads and writes both go through
+    # here, so that was not merely a wrong answer: deleting a project locally
+    # would have aimed the cleanup at production's calendar.
+    root = os.getenv('PTR_PROJECTS_ROOT')
+    if root:
+        return f"{root.rstrip('/')}/{path}"
+
+    # Otherwise the original behaviour: use the same projects deployment as the
+    # one running the calendar. E.g. The dev calendar backend will call the dev
+    # projects backend
     stage = os.getenv('STAGE', 'dev')
     # The production projects url replaces 'prod' with 'projects' in the url
     if stage == 'prod':
@@ -108,6 +120,42 @@ def get_projects_url(path):
 
     url = f"https://projects.photonranch.org/{stage}/{path}"
     return url
+
+
+def associate_event_with_project(project_id, event_id):
+    """Record a booking on the project it will run, at booking time.
+
+    A project keeps scheduled_with_events so that deleting it can also clear
+    the bookings that would have run it. Nothing ever wrote that list: the
+    booking carried project_id and the project was never told, so every project
+    in the table had an empty list and deleteProject's cleanup removed nothing.
+    Deleting a project therefore left its bookings behind, and an observatory
+    would pick one up, find no project, and silently skip it -- six such
+    bookings had accumulated across five sites before anyone looked.
+
+    project_id is "<project_name>#<created_at>"; anything else, including the
+    stored 'none', means the booking has no project to register with.
+
+    Never raises. A booking that is made but not registered is the condition
+    this stack has been in all along, and it is a far better outcome than
+    refusing the booking because the projects backend is briefly unwell. The
+    add-project-event endpoint is idempotent, so a retry is harmless.
+    """
+    if not project_id or '#' not in str(project_id):
+        return
+    project_name, created_at = str(project_id).split('#', 1)
+    try:
+        requests.post(
+            get_projects_url('add-project-event'),
+            json.dumps({
+                "project_name": project_name,
+                "created_at": created_at,
+                "event_id": event_id,
+            }),
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"could not associate event {event_id} with project {project_id}: {e}")
 
 
 def get_project(project_name, created_at):
