@@ -1,4 +1,5 @@
 import json
+import traceback
 from boto3.dynamodb.conditions import Key
 
 from utils import DecimalEncoder
@@ -69,8 +70,13 @@ def addNewEvent(event, context):
 
     # Something else went wrong, return a Bad Request status code.
     except Exception as e:
+        # json.dumps(e) raises TypeError -- an exception is not serializable --
+        # so this clause used to raise from inside itself and the caller got an
+        # opaque 500 with the real error nowhere in the response. The same
+        # mistake was in photonranch-projects, where it hid a live IndexError.
         print(f"Exception: {e}")
-        return create_response(400, json.dumps(e))
+        print(traceback.format_exc())
+        return create_response(400, f"{type(e).__name__}: {e}")
 
 
 def modifyEvent(event, context):
@@ -102,8 +108,15 @@ def modifyEvent(event, context):
     originalId =  originalEvent['event_id']
     originalStart = originalEvent['start']
 
-    # Make sure the user is admin, or modifying their own event
-    creatorId = get_event_by_id(originalId, originalStart)['creator_id']
+    # Make sure the user is admin, or modifying their own event.
+    # get_event_by_id returns '' when there is no such event, and ''['creator_id']
+    # raises TypeError -- so modifying an event that is not there answered 500
+    # rather than saying it was not found. deleteEvent already guards this with
+    # `or {}`; this one did not.
+    original = get_event_by_id(originalId, originalStart) or {}
+    if not original:
+        return create_response(404, "No event found to modify.")
+    creatorId = original['creator_id']
     userMakingThisRequest = event["requestContext"]["authorizer"]["principalId"]
     userRoles = json.loads(event["requestContext"]["authorizer"]["userRoles"])
     if creatorId != userMakingThisRequest and 'admin' not in userRoles:
